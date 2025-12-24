@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Στέλλα Καρυδάκι</title>
+<style>
+    body {
+        font-family: Arial, sans-serif;
+        background: #f4f4f4;
+        margin: 20px;
+    }
+    h1 {
+        text-align: center;
+    }
+    #yearTotals {
+        font-size: 20px;
+        font-weight: bold;
+        margin-bottom: 20px;
+        text-align: center;
+    }
+
+    /* Export button hidden unless in edit mode */
+    #exportBtn {
+        display: none;
+        margin: 0 auto 20px auto;
+        padding: 10px 20px;
+        background: #4CAF50;
+        color: white;
+        border: none;
+        border-radius: 6px;
+        font-size: 16px;
+        cursor: pointer;
+    }
+    body.edit-mode #exportBtn {
+        display: block;
+    }
+    #exportBtn:hover {
+        background: #45a049;
+    }
+
+    .calendar-container {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 15px;
+    }
+    .month-box {
+        background: white;
+        padding: 10px;
+        border-radius: 8px;
+        box-shadow: 0 0 5px rgba(0,0,0,0.2);
+    }
+    .month-title {
+        text-align: center;
+        font-weight: bold;
+        margin-bottom: 10px;
+        font-size: 18px;
+        text-transform: capitalize;
+    }
+    .month-summary {
+        margin-top: 10px;
+        font-weight: bold;
+        text-align: center;
+        background: #eee;
+        padding: 5px;
+        border-radius: 5px;
+    }
+    table {
+        width: 100%;
+        border-collapse: collapse;
+        text-align: center;
+        font-size: 14px;
+    }
+    th {
+        background: #ddd;
+        padding: 5px;
+    }
+    td {
+        padding: 5px;
+        border-radius: 4px;
+        vertical-align: top;
+    }
+    .worked-red {
+        background: #ff6666 !important;
+        color: white;
+        font-weight: bold;
+    }
+    .worked-green {
+        background: #66cc66 !important;
+        color: white;
+        font-weight: bold;
+    }
+
+    /* Inputs: always look normal */
+    input[data-iso] {
+        width: 45px;
+        text-align: center;
+        border: 1px solid #aaa;
+        border-radius: 4px;
+        margin-top: 3px;
+    }
+</style>
+</head>
+<body>
+
+<h1>Kostas Skalkos</h1>
+
+<button id="exportBtn">Export to Excel</button>
+
+<div id="yearTotals">
+    Total Hours: <span id="yearHours">0</span> |
+    Total Money: €<span id="yearMoney">0.00</span>
+</div>
+
+<div class="calendar-container" id="calendar"></div>
+
+<script>
+/* ===========================
+   CONFIGURATION
+=========================== */
+const year = 2026;
+const hourlyRate = 5.2;
+
+const startMonth = 4; // May
+const endMonth = 9;   // October
+
+const STORAGE_KEY = "work_hours_may_oct_2026_protected_english_v1";
+
+/* EDIT MODE PROTECTION */
+let isEditMode = false;
+let editTimeoutId = null;
+const EDIT_KEY = "stella2026";
+const EDIT_DURATION_MS = 5 * 60 * 1000; // 5 minutes
+
+/* ===========================
+   DATA STRUCTURES
+=========================== */
+let yearHours = 0;
+let yearMoney = 0;
+
+const monthData = {};
+
+/* ===========================
+   EDIT MODE FUNCTIONS
+=========================== */
+function enterEditMode() {
+    isEditMode = true;
+    document.body.classList.add("edit-mode");
+
+    document.querySelectorAll("input[data-iso]").forEach(input => {
+        input.disabled = false;
+    });
+
+    if (editTimeoutId) clearTimeout(editTimeoutId);
+    editTimeoutId = setTimeout(exitEditMode, EDIT_DURATION_MS);
+}
+
+function exitEditMode() {
+    isEditMode = false;
+    document.body.classList.remove("edit-mode");
+
+    document.querySelectorAll("input[data-iso]").forEach(input => {
+        input.disabled = true;
+    });
+
+    if (editTimeoutId) {
+        clearTimeout(editTimeoutId);
+        editTimeoutId = null;
+    }
+}
+
+function promptForEditKey() {
+    const key = prompt("Enter edit key:");
+    if (key === EDIT_KEY) {
+        enterEditMode();
+    } else if (key !== null) {
+        alert("Incorrect key.");
+    }
+}
+
+/* Keyboard shortcut: Ctrl + K */
+document.addEventListener("keydown", (e) => {
+    if (e.ctrlKey && (e.key === "k" || e.key === "K")) {
+        e.preventDefault();
+        if (!isEditMode) {
+            promptForEditKey();
+        } else {
+            if (editTimeoutId) clearTimeout(editTimeoutId);
+            editTimeoutId = setTimeout(exitEditMode, EDIT_DURATION_MS);
+        }
+    }
+});
+
+/* ===========================
+   SAVE / LOAD
+=========================== */
+function saveData() {
+    if (!isEditMode) return;
+
+    const allInputs = document.querySelectorAll("input[data-iso]");
+    const days = {};
+
+    allInputs.forEach(input => {
+        const iso = input.dataset.iso;
+        const value = input.value.trim();
+        days[iso] = value === "" ? "" : parseFloat(value);
+    });
+
+    const payload = {
+        yearHours,
+        yearMoney,
+        months: monthData,
+        days
+    };
+
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+}
+
+function loadData() {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return;
+
+    const payload = JSON.parse(raw);
+    if (!payload.days) return;
+
+    yearHours = 0;
+    yearMoney = 0;
+
+    Object.keys(monthData).forEach(m => {
+        monthData[m].hours = 0;
+        monthData[m].money = 0;
+    });
+
+    Object.entries(payload.days).forEach(([iso, value]) => {
+        const input = document.querySelector(`input[data-iso='${iso}']`);
+        if (!input) return;
+
+        const td = input.closest("td");
+        const monthIndex = parseInt(input.dataset.month, 10);
+
+        td.classList.remove("worked-red", "worked-green");
+
+        if (value === "") {
+            input.value = "";
+            td.dataset.prevHours = 0;
+            td.dataset.prevMoney = 0;
+            return;
+        }
+
+        const hours = parseFloat(value);
+        const earned = hours * hourlyRate;
+
+        input.value = hours;
+
+        monthData[monthIndex].hours += hours;
+        monthData[monthIndex].money += earned;
+
+        yearHours += hours;
+        yearMoney += earned;
+
+        td.dataset.prevHours = hours;
+        td.dataset.prevMoney = earned;
+
+        if (hours === 0) {
+            td.classList.add("worked-green");
+        } else {
+            td.classList.add("worked-red");
+        }
+    });
+
+    Object.keys(monthData).forEach(m => {
+        monthData[m].summaryElement.textContent =
+            `Month: ${monthData[m].hours.toFixed(1)} hours | €${monthData[m].money.toFixed(2)}`;
+    });
+
+    updateYearTotals();
+}
+
+/* ===========================
+   TOTALS
+=========================== */
+function updateYearTotals() {
+    document.getElementById("yearHours").textContent = yearHours.toFixed(1);
+    document.getElementById("yearMoney").textContent = yearMoney.toFixed(2);
+}
+
+/* ===========================
+   CALENDAR GENERATION
+=========================== */
+function generateCalendar() {
+    const container = document.getElementById("calendar");
+
+    const englishMonths = [
+        "January","February","March","April","May","June",
+        "July","August","September","October","November","December"
+    ];
+
+    const englishWeekdays = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+
+    for (let month = startMonth; month <= endMonth; month++) {
+        const date = new Date(year, month, 1);
+
+        const monthBox = document.createElement("div");
+        monthBox.className = "month-box";
+
+        const monthName = englishMonths[month];
+        monthBox.innerHTML = `<div class="month-title">${monthName}</div>`;
+
+        const table = document.createElement("table");
+
+        let headerRow = "<tr>";
+        englishWeekdays.forEach(d => headerRow += `<th>${d}</th>`);
+        headerRow += "</tr>";
+        table.innerHTML = headerRow;
+
+        let row = document.createElement("tr");
+
+        let firstDay = (date.getDay() + 6) % 7;
+        for (let i = 0; i < firstDay; i++) {
+            row.appendChild(document.createElement("td"));
+        }
+
+        monthData[month] = { hours: 0, money: 0, summaryElement: null };
+
+        while (date.getMonth() === month) {
+            const td = document.createElement("td");
+            const dayNumber = date.getDate();
+            const iso = `${year}-${String(month+1).padStart(2,"0")}-${String(dayNumber).padStart(2,"0")}`;
+
+            td.innerHTML = `
+                <div>${dayNumber}</div>
+                <input type="number" step="0.1" data-iso="${iso}" data-month="${month}" disabled>
+            `;
+
+            const input = td.querySelector("input");
+
+            input.addEventListener("input", () => {
+                if (!isEditMode) {
+                    input.value = td.dataset.prevHours || "";
+                    return;
+                }
+
+                const value = input.value.trim();
+                const prevHours = parseFloat(td.dataset.prevHours || 0);
+                const prevMoney = parseFloat(td.dataset.prevMoney || 0);
+
+                monthData[month].hours -= prevHours;
+                monthData[month].money -= prevMoney;
+                yearHours -= prevHours;
+                yearMoney -= prevMoney;
+
+                td.classList.remove("worked-red", "worked-green");
+
+                if (value === "") {
+                    td.dataset.prevHours = 0;
+                    td.dataset.prevMoney = 0;
+                } else {
+                    const hours = parseFloat(value);
+                    const earned = hours * hourlyRate;
+
+                    td.dataset.prevHours = hours;
+                    td.dataset.prevMoney = earned;
+
+                    monthData[month].hours += hours;
+                    monthData[month].money += earned;
+                    yearHours += hours;
+                    yearMoney += earned;
+
+                    if (hours === 0) {
+                        td.classList.add("worked-green");
+                    } else {
+                        td.classList.add("worked-red");
+                    }
+                }
+
+                monthData[month].summaryElement.textContent =
+                    `Month: ${monthData[month].hours.toFixed(1)} hours | €${monthData[month].money.toFixed(2)}`;
+
+                updateYearTotals();
+                saveData();
+            });
+
+            row.appendChild(td);
+
+            if (row.children.length === 7) {
+                table.appendChild(row);
+                row = document.createElement("tr");
+            }
+
+            date.setDate(date.getDate() + 1);
+        }
+
+        if (row.children.length > 0) table.appendChild(row);
+
+        monthBox.appendChild(table);
+
+        const monthSummary = document.createElement("div");
+        monthSummary.className = "month-summary";
+        monthSummary.textContent = "Month: 0 hours | €0.00";
+        monthBox.appendChild(monthSummary);
+
+        monthData[month].summaryElement = monthSummary;
+
+        container.appendChild(monthBox);
+    }
+
+    loadData();
+}
+
+/* ===========================
+   EXPORT
+=========================== */
+document.getElementById("exportBtn").addEventListener("click", () => {
+    if (!isEditMode) return;
+
+    const html = `
+        <html>
+        <head><meta charset="UTF-8"></head>
+        <body>${document.body.innerHTML}</body>
+        </html>
+    `;
+
+    const blob = new Blob([html], { type: "application/vnd.ms-excel" });
+    const url = URL.createObjectURL(blob);
+
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `work_hours_may_oct_${year}.xls`;
+    a.click();
+
+    URL.revokeObjectURL(url);
+});
+
+/* ===========================
+   INIT
+=========================== */
+generateCalendar();
+exitEditMode();
+</script>
+
+</body>
+</html>
+
+
